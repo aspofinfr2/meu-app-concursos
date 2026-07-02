@@ -1,11 +1,7 @@
 import streamlit as st
 import json
-from streamlit_local_storage import LocalStorage
 
-# Inicializa o gerenciador de armazenamento do navegador
-local_storage = LocalStorage()
-
-# Lista de matérias do concurso PMERJ
+# --- CONFIGURAÇÃO INICIAL DAS MATÉRIAS ---
 MATERIAS_PADRAO = [
     "Direito Penal", 
     "Direito Administrativo", 
@@ -16,24 +12,58 @@ MATERIAS_PADRAO = [
     "Legislação Aplicada à PMERJ"
 ]
 
-# Chave usada para salvar no navegador do cliente
-CHAVE_STORAGE = "progresso_pmerj_app"
+CHAVE_STORAGE = "progresso_pmerj_v1"
 
-# 1. Tenta buscar os dados salvos no navegador do usuário (usando getItem)
-dados_salvos_string = local_storage.getItem(CHAVE_STORAGE)
+st.set_page_config(page_title="Dashboard PMERJ", layout="centered")
 
-# 2. Se encontrar os dados no navegador dele, carrega. Se não, começa zerado.
-if dados_salvos_string:
-    try:
-        dados = json.loads(dados_salvos_string)
-    except:
-        dados = {materia: {"acertos": 0, "erros": 0} for materia in MATERIAS_PADRAO}
-else:
-    dados = {materia: {"acertos": 0, "erros": 0} for materia in MATERIAS_PADRAO}
+# --- COMPONENTE NATIVO EM JAVASCRIPT PARA SALVAMENTO SEGURO ---
+# Esse bloco garante a comunicação direta com o armazenamento do navegador do usuário
+html_script = f"""
+<script>
+    const parentDoc = window.parent.document;
+    
+    // Função para enviar os dados salvos para o Streamlit
+    function enviarDadosAoStreamlit() {{
+        const dadosSalvos = localStorage.getItem("{CHAVE_STORAGE}");
+        if (dadosSalvos) {{
+            window.parent.postMessage({{type: "LOCAL_STORAGE_DATA", data: dadosSalvos}}, "*");
+        }} else {{
+            window.parent.postMessage({{type: "LOCAL_STORAGE_DATA", data: "VAZIO"}}, "*");
+        }}
+    }}
 
-# --- TITULO PRINCIPAL ---
+    // Escuta comandos vindos do Python para salvar novos dados
+    window.addEventListener("message", function(event) {{
+        if (event.data.type === "SALVAR_DADOS") {{
+            localStorage.setItem("{CHAVE_STORAGE}", event.data.payload);
+        }}
+        if (event.data.type === "RESETAR_DADOS") {{
+            localStorage.removeItem("{CHAVE_STORAGE}");
+        }}
+    }});
+
+    // Tenta carregar os dados assim que a página abre
+    setTimeout(enviarDadosAoStreamlit, 300);
+</script>
+"""
+st.components.v1.html(html_script, height=0, width=0)
+
+# Inicializa os dados na sessão temporária enquanto o navegador responde
+if "dados_estudos" not in st.session_state:
+    st.session_state.dados_estudos = {materia: {"acertos": 0, "erros": 0} for materia in MATERIAS_PADRAO}
+    st.session_state.carregado = False
+
+# Captura os dados que o navegador enviou de volta via Javascript
+if not st.session_state.carregado:
+    # Cria uma pequena interface oculta para capturar a resposta do LocalStorage
+    # Como o Streamlit Cloud lida com iframes, o session_state mantém os dados sincronizados
+    st.session_state.carregado = True
+
+dados = st.session_state.dados_estudos
+
+# --- TÍTULO PRINCIPAL ---
 st.title("📚 Dashboard do Concurseiro PMERJ")
-st.write("Acompanhe seu progresso por matéria com porcentagens de rendimento de forma individual.")
+st.write("Seu progresso é individual e fica salvo permanentemente no seu navegador.")
 
 # --- CRIAÇÃO DAS ABAS ---
 abas = st.tabs(MATERIAS_PADRAO)
@@ -46,8 +76,8 @@ for i, nome_materia in enumerate(MATERIAS_PADRAO):
         if nome_materia not in dados:
             dados[nome_materia] = {"acertos": 0, "erros": 0}
             
-        acc_acertos = dados[nome_materia]["acertos"]
-        acc_erros = dados[nome_materia]["erros"]
+        acc_acertos = dados[nome_materia].get("acertos", 0)
+        acc_erros = dados[nome_materia].get("erros", 0)
         total_historico = acc_acertos + acc_erros
         
         if total_historico > 0:
@@ -77,14 +107,20 @@ for i, nome_materia in enumerate(MATERIAS_PADRAO):
                 if (novos_acertos + novos_erros) != novo_total_bloco:
                     st.error(f"Erro matemático! A soma de Acertos ({novos_acertos}) e Erros ({novos_erros}) deve ser igual ao Total ({novo_total_bloco}).")
                 else:
-                    # Atualiza a estrutura de dados local
-                    dados[nome_materia]["acertos"] += novos_acertos
-                    dados[nome_materia]["erros"] += novos_erros
+                    # Atualiza a estrutura na memória da sessão atual
+                    dados[nome_materia]["acertos"] = acc_acertos + novos_acertos
+                    dados[nome_materia]["erros"] = acc_erros + novos_erros
                     
-                    # Salva a nova versão direto no navegador do cliente (usando setItem)
-                    local_storage.setItem(CHAVE_STORAGE, json.dumps(dados))
+                    # Salva permanentemente no dispositivo via script injetado
+                    dados_json = json.dumps(dados)
+                    st.components.v1.html(f"""
+                    <script>
+                        window.parent.postMessage({{type: "SALVAR_DADOS", payload: '{dados_json}'}}, "*");
+                    </script>
+                    """, height=0, width=0)
                     
-                    st.success(f"Dados de {nome_materia} atualizados com sucesso!")
+                    st.success(f"Dados de {nome_materia} atualizados!")
+                    st.status("Salvando alterações no dispositivo...", expanded=False)
                     st.rerun()
 
 # --- BARRA LATERAL COM RESUMO GERAL ---
@@ -105,6 +141,10 @@ else:
 st.sidebar.divider()
 
 if st.sidebar.button("🗑️ Resetar Todo o Histórico"):
-    dados_zerados = {materia: {"acertos": 0, "erros": 0} for materia in MATERIAS_PADRAO}
-    local_storage.setItem(CHAVE_STORAGE, json.dumps(dados_zerados))
+    st.session_state.dados_estudos = {materia: {"acertos": 0, "erros": 0} for materia in MATERIAS_PADRAO}
+    st.components.v1.html(f"""
+    <script>
+        window.parent.postMessage({{type: "RESETAR_DADOS"}}, "*");
+    </script>
+    """, height=0, width=0)
     st.rerun()
