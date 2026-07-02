@@ -12,58 +12,54 @@ MATERIAS_PADRAO = [
     "Legislação Aplicada à PMERJ"
 ]
 
-CHAVE_STORAGE = "progresso_pmerj_v1"
-
 st.set_page_config(page_title="Dashboard PMERJ", layout="centered")
 
-# --- COMPONENTE NATIVO EM JAVASCRIPT PARA SALVAMENTO SEGURO ---
-# Esse bloco garante a comunicação direta com o armazenamento do navegador do usuário
-html_script = f"""
-<script>
-    const parentDoc = window.parent.document;
-    
-    // Função para enviar os dados salvos para o Streamlit
-    function enviarDadosAoStreamlit() {{
-        const dadosSalvos = localStorage.getItem("{CHAVE_STORAGE}");
-        if (dadosSalvos) {{
-            window.parent.postMessage({{type: "LOCAL_STORAGE_DATA", data: dadosSalvos}}, "*");
-        }} else {{
-            window.parent.postMessage({{type: "LOCAL_STORAGE_DATA", data: "VAZIO"}}, "*");
-        }}
-    }}
-
-    // Escuta comandos vindos do Python para salvar novos dados
-    window.addEventListener("message", function(event) {{
-        if (event.data.type === "SALVAR_DADOS") {{
-            localStorage.setItem("{CHAVE_STORAGE}", event.data.payload);
-        }}
-        if (event.data.type === "RESETAR_DADOS") {{
-            localStorage.removeItem("{CHAVE_STORAGE}");
-        }}
-    }});
-
-    // Tenta carregar os dados assim que a página abre
-    setTimeout(enviarDadosAoStreamlit, 300);
-</script>
-"""
-st.components.v1.html(html_script, height=0, width=0)
-
-# Inicializa os dados na sessão temporária enquanto o navegador responde
+# --- GERENCIAMENTO DE SESSÃO NATIIVA ---
 if "dados_estudos" not in st.session_state:
     st.session_state.dados_estudos = {materia: {"acertos": 0, "erros": 0} for materia in MATERIAS_PADRAO}
-    st.session_state.carregado = False
-
-# Captura os dados que o navegador enviou de volta via Javascript
-if not st.session_state.carregado:
-    # Cria uma pequena interface oculta para capturar a resposta do LocalStorage
-    # Como o Streamlit Cloud lida com iframes, o session_state mantém os dados sincronizados
-    st.session_state.carregado = True
 
 dados = st.session_state.dados_estudos
 
+# --- BARRA LATERAL: SISTEMA DE BACKUP INDIVIDUAL ---
+st.sidebar.title("💾 Salvar/Carregar Progresso")
+st.sidebar.write("Como o app não exige login, use os botões abaixo para nunca perder seus dados:")
+
+# 1. Botão para exportar (Baixar os dados atuais)
+dados_json_string = json.dumps(dados, ensure_ascii=False, indent=4)
+st.sidebar.download_button(
+    label="📥 Baixar Meu Progresso",
+    data=dados_json_string,
+    file_name="progresso_pmerj.json",
+    mime="application/json",
+    help="Clique aqui para salvar seu histórico no celular antes de fechar a aba."
+)
+
+st.sidebar.divider()
+
+# 2. Upload para importar (Recuperar dados salvos)
+arquivo_subido = st.sidebar.file_uploader(
+    "📤 Carregar Meu Progresso", 
+    type=["json"],
+    help="Suba seu arquivo 'progresso_pmerj.json' aqui para recuperar suas questões."
+)
+
+if arquivo_subido is not None:
+    try:
+        dados_carregados = json.load(arquivo_subido)
+        # Validação simples para garantir que o arquivo é o correto
+        if isinstance(dados_carregados, dict) and any(m in dados_carregados for m in MATERIAS_PADRAO):
+            st.session_state.dados_estudos = dados_carregados
+            st.sidebar.success("Progresso carregado com sucesso!")
+            # Evita loops recarregando os dados novos na tela
+            dados = st.session_state.dados_estudos
+        else:
+            st.sidebar.error("Arquivo inválido.")
+    except Exception as e:
+        st.sidebar.error("Erro ao ler o arquivo.")
+
 # --- TÍTULO PRINCIPAL ---
 st.title("📚 Dashboard do Concurseiro PMERJ")
-st.write("Seu progresso é individual e fica salvo permanentemente no seu navegador.")
+st.write("Acompanhe seu progresso de estudos por matéria.")
 
 # --- CRIAÇÃO DAS ABAS ---
 abas = st.tabs(MATERIAS_PADRAO)
@@ -105,25 +101,15 @@ for i, nome_materia in enumerate(MATERIAS_PADRAO):
             
             if botao_salvar:
                 if (novos_acertos + novos_erros) != novo_total_bloco:
-                    st.error(f"Erro matemático! A soma de Acertos ({novos_acertos}) e Erros ({novos_erros}) deve ser igual ao Total ({novo_total_bloco}).")
+                    st.error(f"Erro matemático! A soma de Acertos e Erros deve ser igual ao Total.")
                 else:
-                    # Atualiza a estrutura na memória da sessão atual
-                    dados[nome_materia]["acertos"] = acc_acertos + novos_acertos
-                    dados[nome_materia]["erros"] = acc_erros + novos_erros
-                    
-                    # Salva permanentemente no dispositivo via script injetado
-                    dados_json = json.dumps(dados)
-                    st.components.v1.html(f"""
-                    <script>
-                        window.parent.postMessage({{type: "SALVAR_DADOS", payload: '{dados_json}'}}, "*");
-                    </script>
-                    """, height=0, width=0)
-                    
-                    st.success(f"Dados de {nome_materia} atualizados!")
-                    st.status("Salvando alterações no dispositivo...", expanded=False)
+                    st.session_state.dados_estudos[nome_materia]["acertos"] = acc_acertos + novos_acertos
+                    st.session_state.dados_estudos[nome_materia]["erros"] = acc_erros + novos_erros
+                    st.success(f"Dados de {nome_materia} atualizados na tela! Lembre-se de baixar seu progresso na barra lateral.")
                     st.rerun()
 
 # --- BARRA LATERAL COM RESUMO GERAL ---
+st.sidebar.divider()
 st.sidebar.title("📈 Desempenho Global")
 total_hits = sum(d.get("acertos", 0) for d in dados.values())
 total_misses = sum(d.get("erros", 0) for d in dados.values())
@@ -137,14 +123,3 @@ if total_geral_todas_materias > 0:
     st.sidebar.progress(total_hits / total_geral_todas_materias)
 else:
     st.sidebar.metric(label="Aproveitamento Geral", value="0.00%")
-
-st.sidebar.divider()
-
-if st.sidebar.button("🗑️ Resetar Todo o Histórico"):
-    st.session_state.dados_estudos = {materia: {"acertos": 0, "erros": 0} for materia in MATERIAS_PADRAO}
-    st.components.v1.html(f"""
-    <script>
-        window.parent.postMessage({{type: "RESETAR_DADOS"}}, "*");
-    </script>
-    """, height=0, width=0)
-    st.rerun()
